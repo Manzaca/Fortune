@@ -322,6 +322,53 @@
   width: 100%;
 }
 
+.dashboard__identity {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.dashboard__mobile-toggle {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  border: 1px solid rgba(143, 163, 176, 0.3);
+  background: rgba(49, 56, 61, 0.7);
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.dashboard__mobile-toggle span {
+  display: block;
+  height: 2px;
+  width: 20px;
+  border-radius: 999px;
+  background: rgba(226, 233, 239, 0.9);
+  transition: transform 0.22s ease, opacity 0.22s ease;
+  margin: 0 auto;
+}
+
+.dashboard__mobile-toggle.is-open {
+  border-color: rgba(98, 255, 225, 0.55);
+  background: rgba(49, 56, 61, 0.9);
+}
+
+.dashboard__mobile-toggle.is-open span:nth-child(1) {
+  transform: translateY(8px) rotate(45deg);
+}
+
+.dashboard__mobile-toggle.is-open span:nth-child(2) {
+  opacity: 0;
+}
+
+.dashboard__mobile-toggle.is-open span:nth-child(3) {
+  transform: translateY(-8px) rotate(-45deg);
+}
+
 .dashboard__logo {
   width: 160px;
   flex: 0 0 auto;
@@ -354,6 +401,9 @@
 }
 
 .tab-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: rgba(58, 66, 72, 0.6);
   border: 1px solid rgba(167, 191, 206, 0.32);
   border-radius: 999px;
@@ -379,6 +429,83 @@
 
 .dashboard__tabs::-webkit-scrollbar {
   display: none;
+}
+
+.dashboard__drawer {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: min(80vw, 260px);
+  padding: 2rem 1.5rem;
+  background: linear-gradient(180deg, rgba(49, 55, 59, 0.94), rgba(27, 32, 36, 0.98));
+  border-right: 1px solid var(--color-outline);
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  transform: translateX(-100%);
+  transition: transform 0.28s ease;
+  z-index: 40;
+  pointer-events: none;
+}
+
+.dashboard__drawer.is-open {
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.dashboard__drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+.dashboard__drawer-close {
+  background: none;
+  border: 1px solid rgba(167, 191, 206, 0.35);
+  border-radius: 999px;
+  color: rgba(226, 233, 239, 0.85);
+  padding: 0.35rem 0.8rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.dashboard__drawer-close:hover {
+  border-color: rgba(98, 255, 225, 0.55);
+  color: #c6fff1;
+  transform: translateY(-1px);
+}
+
+.dashboard__drawer-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.dashboard__drawer-tabs .tab-button {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0.75rem 1rem;
+  border-radius: 16px;
+  font-size: 0.95rem;
+}
+
+.dashboard__drawer-overlay {
+  position: fixed;
+  inset: 0;
+  border: none;
+  background: rgba(5, 8, 10, 0.55);
+  backdrop-filter: blur(2px);
+  z-index: 30;
+}
+
+.dashboard__drawer-overlay:focus {
+  outline: 2px solid rgba(98, 255, 225, 0.55);
+  outline-offset: 4px;
 }
 
 .dashboard__body {
@@ -564,7 +691,7 @@
   .dashboard__header {
     width: 100%;
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: 0.5rem;
   }
 
   .dashboard__header .ghost-button {
@@ -572,31 +699,21 @@
     font-size: 0.85rem;
   }
 
+  .dashboard__identity {
+    gap: 0.75rem;
+    flex: 1 1 auto;
+  }
+
+  .dashboard__mobile-toggle {
+    display: flex;
+  }
+
   .dashboard__tabs-shell {
-    justify-content: flex-start;
+    display: none;
   }
 
-  .dashboard__tabs {
-    width: 100%;
-    justify-content: flex-start;
-    overflow-x: auto;
-    gap: 0.5rem;
-    padding: 0.5rem 0.6rem;
-    border-radius: 18px;
-    background: rgba(40, 46, 50, 0.8);
-    border: 1px solid rgba(143, 163, 176, 0.3);
-    scroll-snap-type: x mandatory;
-  }
-
-  .dashboard__tabs::before,
-  .dashboard__tabs::after {
-    content: '';
-    flex: 0 0 0.4rem;
-  }
-
-  .tab-button {
-    scroll-snap-align: center;
-    padding: 0.5rem 1rem;
+  .dashboard__drawer {
+    padding-top: 4.5rem;
   }
 
   .auth-panel__logo {

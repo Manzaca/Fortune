@@ -347,10 +347,46 @@ function Dashboard({
   logoWhite,
   loading,
 }) {
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+
+  const navItems = [
+    { key: 'overview', label: 'Overview', isActive: true },
+    { key: 'portfolios', label: 'Portfolios', isActive: false },
+    { key: 'cashflow', label: 'Cash Flow', isActive: false },
+    { key: 'automation', label: 'Automation', isActive: false },
+    { key: 'insights', label: 'Insights', isActive: false },
+  ]
+
+  const toggleMobileNav = () => {
+    setMobileNavOpen((open) => !open)
+  }
+
+  const closeMobileNav = () => {
+    setMobileNavOpen(false)
+  }
+
+  const handleTabClick = () => {
+    if (mobileNavOpen) {
+      closeMobileNav()
+    }
+  }
+
   return (
     <div className="dashboard">
       <header className="dashboard__header">
-        <img src={logoWordmark} alt="Fortune" className="dashboard__logo" />
+        <div className="dashboard__identity">
+          <button
+            type="button"
+            className={`dashboard__mobile-toggle ${mobileNavOpen ? 'is-open' : ''}`}
+            onClick={toggleMobileNav}
+            aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'}
+          >
+            <span />
+            <span />
+            <span />
+          </button>
+          <img src={logoWordmark} alt="Fortune" className="dashboard__logo" />
+        </div>
         <button
           className="ghost-button ghost-button--compact"
           onClick={onSignOut}
@@ -362,23 +398,51 @@ function Dashboard({
 
       <nav className="dashboard__tabs-shell" aria-label="Primary navigation">
         <div className="dashboard__tabs">
-          <button className="tab-button tab-button--active" type="button">
-            Overview
-          </button>
-          <button className="tab-button" type="button">
-            Portfolios
-          </button>
-          <button className="tab-button" type="button">
-            Cash Flow
-          </button>
-          <button className="tab-button" type="button">
-            Automation
-          </button>
-          <button className="tab-button" type="button">
-            Insights
-          </button>
+          {navItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={`tab-button ${item.isActive ? 'tab-button--active' : ''}`}
+              onClick={handleTabClick}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
       </nav>
+
+      <aside className={`dashboard__drawer ${mobileNavOpen ? 'is-open' : ''}`}>
+        <div className="dashboard__drawer-header">
+          <span>Navigation</span>
+          <button
+            type="button"
+            className="dashboard__drawer-close"
+            onClick={closeMobileNav}
+          >
+            Close
+          </button>
+        </div>
+        <div className="dashboard__drawer-tabs">
+          {navItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={`tab-button ${item.isActive ? 'tab-button--active' : ''}`}
+              onClick={handleTabClick}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </aside>
+      {mobileNavOpen ? (
+        <button
+          type="button"
+          className="dashboard__drawer-overlay"
+          onClick={closeMobileNav}
+          aria-label="Close navigation overlay"
+        />
+      ) : null}
 
       <main className="dashboard__body">
         <section className="dashboard__welcome">
