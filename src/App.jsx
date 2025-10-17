@@ -1,9 +1,17 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { supabase } from './lib/supabaseClient'
 import logoTextRightWhite from './assets/logos/logo_text_right_white.png'
 import logoTextUnderWhite from './assets/logos/logo_text_under_white.png'
 import logoWhite from './assets/logos/logo_white.png'
+
+const DASHBOARD_TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'portfolios', label: 'Portfolios' },
+  { key: 'cashflow', label: 'Cash Flow' },
+  { key: 'automation', label: 'Automation' },
+  { key: 'insights', label: 'Insights' },
+]
 
 function App() {
   const [mode, setMode] = useState('signIn')
@@ -169,6 +177,7 @@ function App() {
           logoWordmark={logoTextRightWhite}
           logoWhite={logoWhite}
           loading={loading}
+          userId={user?.id ?? ''}
         />
       ) : (
         <AuthScreen
@@ -346,16 +355,50 @@ function Dashboard({
   logoWordmark,
   logoWhite,
   loading,
+  userId,
 }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const [accounts, setAccounts] = useState([])
+  const [accountsLoading, setAccountsLoading] = useState(true)
+  const [accountsError, setAccountsError] = useState('')
+  const [createForm, setCreateForm] = useState({
+    name: '',
+    type: 'cash',
+    startingBalance: '',
+  })
+  const [createSubmitting, setCreateSubmitting] = useState(false)
+  const [movementForm, setMovementForm] = useState({
+    accountId: '',
+    amount: '',
+    repeatsEvery: 'none',
+  })
+  const [movementSubmitting, setMovementSubmitting] = useState(false)
+  const [activeTab, setActiveTab] = useState('overview')
+  const [showCreateForm, setShowCreateForm] = useState(false)
+  const [deletingAccountId, setDeletingAccountId] = useState(null)
 
-  const navItems = [
-    { key: 'overview', label: 'Overview', isActive: true },
-    { key: 'portfolios', label: 'Portfolios', isActive: false },
-    { key: 'cashflow', label: 'Cash Flow', isActive: false },
-    { key: 'automation', label: 'Automation', isActive: false },
-    { key: 'insights', label: 'Insights', isActive: false },
-  ]
+  const navItems = useMemo(
+    () =>
+      DASHBOARD_TABS.map((item) => ({
+        ...item,
+        isActive: item.key === activeTab,
+      })),
+    [activeTab],
+  )
+  const hasAccounts = accounts.length > 0
+  const accountsCaption = hasAccounts
+    ? 'Keep euro balances aligned and schedule movements as your portfolio evolves.'
+    : 'Create your first euro account to begin tracking capital flows with precision.'
+
+  const formatCurrency = useMemo(
+    () =>
+      new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'EUR',
+        minimumFractionDigits: 2,
+      }),
+    [],
+  )
 
   const toggleMobileNav = () => {
     setMobileNavOpen((open) => !open)
@@ -365,10 +408,420 @@ function Dashboard({
     setMobileNavOpen(false)
   }
 
-  const handleTabClick = () => {
+  const handleTabSelect = (key) => {
+    setActiveTab(key)
     if (mobileNavOpen) {
       closeMobileNav()
     }
+  }
+
+  useEffect(() => {
+    if (activeTab !== 'portfolios' && showCreateForm) {
+      setShowCreateForm(false)
+    }
+  }, [activeTab, showCreateForm])
+
+  useEffect(() => {
+    if (!hasAccounts && showCreateForm) {
+      setShowCreateForm(false)
+    }
+  }, [hasAccounts, showCreateForm])
+
+  const interpretSupabaseError = (error) => {
+    if (!error) return 'An unexpected error occurred. Please try again.'
+    if (error.code === '23514') {
+      return 'Supabase rejected the movement because the repeats_every constraint does not include "none". Update the constraint as outlined in the README and try again.'
+    }
+    if (error.code === '42501') {
+      return 'Permission denied. Ensure delete policies are configured for financial_accounts and financial_account_movements (see README).'
+    }
+    return error.message ?? 'An unexpected error occurred. Please try again.'
+  }
+
+  const loadAccounts = useCallback(async () => {
+    if (!userId) {
+      setAccounts([])
+      return
+    }
+
+    setAccountsLoading(true)
+    setAccountsError('')
+
+    const { data, error } = await supabase
+      .from('financial_accounts')
+      .select(
+        `
+        id,
+        name,
+        type,
+        starting_balance,
+        created_at,
+        movements:financial_account_movements (
+          id,
+          amount,
+          repeats_every,
+          created_at
+        )
+      `,
+      )
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true })
+      .order('created_at', {
+        foreignTable: 'financial_account_movements',
+        ascending: true,
+      })
+
+    if (error) {
+      setAccountsError(error.message)
+      setAccounts([])
+      setAccountsLoading(false)
+      return
+    }
+
+    const mapped = (data ?? []).map((account) => {
+      const movements = account.movements ?? []
+      const balance = movements.reduce(
+        (sum, movement) => sum + Number(movement.amount ?? 0),
+        0,
+      )
+      return {
+        ...account,
+        movements,
+        balance,
+      }
+    })
+
+    setAccounts(mapped)
+    setAccountsLoading(false)
+  }, [userId])
+
+  useEffect(() => {
+    loadAccounts()
+  }, [loadAccounts])
+
+  const handleCreateFormChange = (field) => (event) => {
+    const { value } = event.target
+    setCreateForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const handleMovementChange = (field) => (event) => {
+    const { value } = event.target
+    setMovementForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const handleCreateAccount = async (event) => {
+    event.preventDefault()
+    if (!userId) return
+
+    const trimmedName = createForm.name.trim()
+    if (!trimmedName) {
+      setAccountsError('Give the account a name before creating it.')
+      return
+    }
+
+    const startingBalance = Number(createForm.startingBalance || 0)
+    if (Number.isNaN(startingBalance)) {
+      setAccountsError('Starting balance must be a valid number.')
+      return
+    }
+
+    setCreateSubmitting(true)
+    setAccountsError('')
+
+    let createdAccountId = null
+
+    try {
+      const { data: accountData, error: accountError } = await supabase
+        .from('financial_accounts')
+        .insert({
+          user_id: userId,
+          name: trimmedName,
+          type: createForm.type,
+          starting_balance: startingBalance,
+        })
+        .select('id')
+        .single()
+
+      if (accountError) {
+        throw accountError
+      }
+
+      createdAccountId = accountData?.id
+
+      const { error: movementError } = await supabase
+        .from('financial_account_movements')
+        .insert({
+          account_id: createdAccountId,
+          user_id: userId,
+          amount: startingBalance,
+          repeats_every: 'none',
+        })
+
+      if (movementError) {
+        throw movementError
+      }
+
+      setCreateForm({
+        name: '',
+        type: 'cash',
+        startingBalance: '',
+      })
+      setShowCreateForm(false)
+
+      await loadAccounts()
+    } catch (error) {
+      let message = interpretSupabaseError(error)
+      if (createdAccountId) {
+        const { error: cleanupError } = await supabase
+          .from('financial_accounts')
+          .delete()
+          .eq('id', createdAccountId)
+
+        if (cleanupError) {
+          message += ` ${interpretSupabaseError(cleanupError)}`
+        }
+      }
+      setAccountsError(message)
+    } finally {
+      setCreateSubmitting(false)
+    }
+  }
+
+  const openMovementForm = (accountId) => {
+    setMovementForm({
+      accountId,
+      amount: '',
+      repeatsEvery: 'none',
+    })
+  }
+
+  const cancelMovementForm = () => {
+    setMovementForm({
+      accountId: '',
+      amount: '',
+      repeatsEvery: 'none',
+    })
+  }
+
+  const handleAddMovement = async (event) => {
+    event.preventDefault()
+    if (!userId || !movementForm.accountId) return
+
+    const amountValue = Number(movementForm.amount)
+    if (Number.isNaN(amountValue)) {
+      setAccountsError('Movement amount must be a valid number.')
+      return
+    }
+
+    setMovementSubmitting(true)
+    setAccountsError('')
+
+    try {
+      const { error } = await supabase.from('financial_account_movements').insert({
+        account_id: movementForm.accountId,
+        user_id: userId,
+        amount: amountValue,
+        repeats_every: movementForm.repeatsEvery,
+      })
+
+      if (error) {
+        throw error
+      }
+
+      cancelMovementForm()
+      await loadAccounts()
+    } catch (error) {
+      setAccountsError(interpretSupabaseError(error))
+    } finally {
+      setMovementSubmitting(false)
+    }
+  }
+
+  const isMovementOpen = (accountId) => movementForm.accountId === accountId
+
+  const handleDeleteAccount = async (account) => {
+    if (!userId || !account?.id) return
+    const confirmed = window.confirm(
+      `Delete "${account.name}"? This will remove all related movements.`,
+    )
+    if (!confirmed) return
+
+    setDeletingAccountId(account.id)
+    setAccountsError('')
+
+    try {
+      const { error: movementDeleteError } = await supabase
+        .from('financial_account_movements')
+        .delete()
+        .eq('account_id', account.id)
+        .eq('user_id', userId)
+
+      if (movementDeleteError) {
+        throw movementDeleteError
+      }
+
+      setMovementForm((prev) =>
+        prev.accountId === account.id
+          ? { accountId: '', amount: '', repeatsEvery: 'none' }
+          : prev,
+      )
+
+      const { error } = await supabase
+        .from('financial_accounts')
+        .delete()
+        .eq('id', account.id)
+        .eq('user_id', userId)
+
+      if (error) {
+        throw error
+      }
+
+      await loadAccounts()
+      setShowCreateForm(false)
+    } catch (error) {
+      setAccountsError(interpretSupabaseError(error))
+    } finally {
+      setDeletingAccountId(null)
+    }
+  }
+
+  const renderCreateAccountForm = (additionalClass = '') => (
+    <form
+      className={`accounts__form${additionalClass ? ` ${additionalClass}` : ''}`}
+      onSubmit={handleCreateAccount}
+    >
+      <h3>Open a new account</h3>
+      <p>Create a ledger entry with an opening balance.</p>
+      <div className="accounts__form-row">
+        <label className="input-field">
+          <span>Account name</span>
+          <input
+            type="text"
+            autoComplete="off"
+            value={createForm.name}
+            onChange={handleCreateFormChange('name')}
+            placeholder="Operating cash"
+          />
+        </label>
+      </div>
+      <div className="accounts__form-row accounts__form-row--split">
+        <label className="input-field">
+          <span>Type</span>
+          <select value={createForm.type} onChange={handleCreateFormChange('type')}>
+            <option value="cash">Cash</option>
+            <option value="bank">Bank</option>
+            <option value="savings">Savings</option>
+            <option value="assets">Assets</option>
+          </select>
+        </label>
+        <label className="input-field">
+          <span>Opening balance</span>
+          <input
+            type="number"
+            step="0.01"
+            value={createForm.startingBalance}
+            onChange={handleCreateFormChange('startingBalance')}
+            placeholder="25000"
+          />
+        </label>
+      </div>
+      <button type="submit" className="primary-button" disabled={createSubmitting}>
+        {createSubmitting ? 'Creating…' : 'Create account'}
+      </button>
+    </form>
+  )
+
+  const renderAccountCard = (account) => {
+    const movementOpen = isMovementOpen(account.id)
+    const isDeleting = deletingAccountId === account.id
+
+    return (
+      <article key={account.id} className="account-card">
+        <header>
+          <div>
+            <h3>{account.name}</h3>
+            <span className={`account-chip account-chip--${account.type}`}>
+              {account.type}
+            </span>
+          </div>
+          <strong>{formatCurrency.format(account.balance)}</strong>
+        </header>
+        <div className="account-card__meta">
+          <span>
+            {account.movements.length}{' '}
+            {account.movements.length === 1 ? 'movement' : 'movements'}
+          </span>
+          <span>Created {new Date(account.created_at).toLocaleDateString()}</span>
+        </div>
+        {movementOpen ? (
+          <form className="movement-form" onSubmit={handleAddMovement}>
+            <div className="movement-form__row">
+              <label className="input-field">
+                <span>Amount</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={movementForm.amount}
+                  onChange={handleMovementChange('amount')}
+                  placeholder="1250"
+                />
+              </label>
+              <label className="input-field">
+                <span>Repeats every</span>
+                <select
+                  value={movementForm.repeatsEvery}
+                  onChange={handleMovementChange('repeatsEvery')}
+                >
+                  <option value="none">Does not repeat</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="fortnite">Fortnite</option>
+                  <option value="montly">Montly</option>
+                  <option value="yearly">Yearly</option>
+                </select>
+              </label>
+            </div>
+            <div className="movement-form__actions">
+              <button
+                type="button"
+                className="ghost-button ghost-button--compact"
+                onClick={cancelMovementForm}
+                disabled={movementSubmitting}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="primary-button"
+                disabled={movementSubmitting}
+              >
+                {movementSubmitting ? 'Saving…' : 'Add movement'}
+              </button>
+            </div>
+          </form>
+        ) : null}
+        <div className="account-card__actions">
+          {!movementOpen ? (
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => openMovementForm(account.id)}
+              disabled={movementSubmitting || deletingAccountId === account.id}
+            >
+              Add movement
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="danger-button"
+            onClick={() => handleDeleteAccount(account)}
+            disabled={isDeleting || movementSubmitting}
+          >
+            {isDeleting ? 'Deleting…' : 'Delete account'}
+          </button>
+        </div>
+      </article>
+    )
   }
 
   return (
@@ -403,7 +856,7 @@ function Dashboard({
               key={item.key}
               type="button"
               className={`tab-button ${item.isActive ? 'tab-button--active' : ''}`}
-              onClick={handleTabClick}
+              onClick={() => handleTabSelect(item.key)}
             >
               {item.label}
             </button>
@@ -428,7 +881,7 @@ function Dashboard({
               key={item.key}
               type="button"
               className={`tab-button ${item.isActive ? 'tab-button--active' : ''}`}
-              onClick={handleTabClick}
+              onClick={() => handleTabSelect(item.key)}
             >
               {item.label}
             </button>
@@ -445,48 +898,100 @@ function Dashboard({
       ) : null}
 
       <main className="dashboard__body">
-        <section className="dashboard__welcome">
-          <div className="welcome-copy">
-            <p className="welcome-kicker">Welcome aboard</p>
-            <h1>Good to see you, {name || 'Fortune operator'}.</h1>
-            <p>
-              Your personalised dashboard surfaces the metrics that matter most.
-              Connect accounts, review capital flows, and deploy strategies with
-              intent.
-            </p>
-            <button className="primary-button primary-button--large">
-              Explore portfolio intelligence
-            </button>
-          </div>
-          <div className="welcome-card">
-            <img src={logoWhite} alt="Fortune orb" />
-            <div>
-              <span className="welcome-card__label">Active identity</span>
-              <span className="welcome-card__value">{email}</span>
+        {activeTab === 'overview' ? (
+          <section className="dashboard__welcome">
+            <div className="welcome-copy">
+              <p className="welcome-kicker">Welcome aboard</p>
+              <h1>Good to see you, {name || 'Fortune operator'}.</h1>
+              <p>
+                Your personalised dashboard surfaces the metrics that matter most.
+                Connect accounts, review capital flows, and deploy strategies with
+                intent.
+              </p>
+              <button className="primary-button primary-button--large">
+                Explore portfolio intelligence
+              </button>
             </div>
-          </div>
-        </section>
+          </section>
+        ) : null}
 
-        <section className="dashboard__grid">
-          <InsightCard
-            title="Capital overview"
-            value="$6,212,940"
-            delta="+3.8% MoM"
-            description="Aggregate balances across every linked institution, normalised and FX-adjusted."
-          />
-          <InsightCard
-            title="Cash runway"
-            value="19 months"
-            delta="+2 months"
-            description="Projected runway using current burn and committed revenue."
-          />
-          <InsightCard
-            title="Opportunities"
-            value="4 signals"
-            delta="2 new"
-            description="Fresh intelligence on liquidity optimisation and risk hedging."
-          />
-        </section>
+        {activeTab === 'portfolios' ? (
+          <section className="accounts">
+            <header className="accounts__header">
+              <div>
+                <p className="accounts__eyebrow">Accounts</p>
+                <h2>Structure your capital stack</h2>
+              </div>
+              <div className="accounts__actions">
+                <p className="accounts__caption">{accountsCaption}</p>
+                {hasAccounts ? (
+                  <button
+                    type="button"
+                    className={`accounts__add ${showCreateForm ? 'is-active' : ''}`}
+                    onClick={() => setShowCreateForm((prev) => !prev)}
+                    aria-label={showCreateForm ? 'Hide account creation form' : 'Add another account'}
+                    disabled={accountsLoading}
+                  >
+                    <span aria-hidden="true">+</span>
+                  </button>
+                ) : null}
+              </div>
+            </header>
+
+            {accountsError ? (
+              <div className="feedback feedback--error">{accountsError}</div>
+            ) : null}
+
+            {!hasAccounts ? (
+              <div className="accounts__grid">
+                {renderCreateAccountForm()}
+
+                <div className="accounts__list">
+                  {accountsLoading ? (
+                    <div className="accounts__empty">Loading accounts…</div>
+                  ) : (
+                    <div className="accounts__empty">
+                      <p>No accounts yet.</p>
+                      <p>Spin up your first ledger to start mapping capital motion.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="accounts__list accounts__list--full">
+                {showCreateForm ? renderCreateAccountForm('accounts__form--inline') : null}
+                {accountsLoading ? (
+                  <div className="accounts__empty">Refreshing accounts…</div>
+                ) : (
+                  accounts.map(renderAccountCard)
+                )}
+              </div>
+            )}
+          </section>
+        ) : null}
+
+        {activeTab === 'overview' ? (
+          <section className="dashboard__grid">
+            <InsightCard
+              title="Capital overview"
+              value={formatCurrency.format(6212940)}
+              delta="+3.8% MoM"
+              description="Aggregate balances across every linked institution, normalised and FX-adjusted."
+            />
+            <InsightCard
+              title="Cash runway"
+              value="19 months"
+              delta="+2 months"
+              description="Projected runway using current burn and committed revenue."
+            />
+            <InsightCard
+              title="Opportunities"
+              value="4 signals"
+              delta="2 new"
+              description="Fresh intelligence on liquidity optimisation and risk hedging."
+            />
+          </section>
+        ) : null}
       </main>
     </div>
   )
