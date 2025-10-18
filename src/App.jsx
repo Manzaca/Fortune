@@ -13,6 +13,39 @@ const DASHBOARD_TABS = [
   { key: 'insights', label: 'Insights' },
 ]
 
+const CADENCE_LABELS = {
+  none: 'One-off',
+  daily: 'Daily',
+  weekly: 'Weekly',
+  fortnite: 'Fortnightly',
+  montly: 'Monthly',
+  yearly: 'Yearly',
+}
+
+const addInterval = (date, cadence) => {
+  const next = new Date(date.getTime())
+  switch (cadence) {
+    case 'daily':
+      next.setDate(next.getDate() + 1)
+      break
+    case 'weekly':
+      next.setDate(next.getDate() + 7)
+      break
+    case 'fortnite':
+      next.setDate(next.getDate() + 14)
+      break
+    case 'montly':
+      next.setMonth(next.getMonth() + 1)
+      break
+    case 'yearly':
+      next.setFullYear(next.getFullYear() + 1)
+      break
+    default:
+      return null
+  }
+  return next
+}
+
 function App() {
   const [mode, setMode] = useState('signIn')
   const [loading, setLoading] = useState(false)
@@ -376,6 +409,7 @@ function Dashboard({
   const [activeTab, setActiveTab] = useState('overview')
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [deletingAccountId, setDeletingAccountId] = useState(null)
+  const [selectedCashflowAccountId, setSelectedCashflowAccountId] = useState('')
 
   const navItems = useMemo(
     () =>
@@ -386,16 +420,77 @@ function Dashboard({
     [activeTab],
   )
   const hasAccounts = accounts.length > 0
-  const accountsCaption = hasAccounts
-    ? 'Keep euro balances aligned and schedule movements as your portfolio evolves.'
-    : 'Create your first euro account to begin tracking capital flows with precision.'
+  const accountTypeSummary = useMemo(() => {
+    if (!hasAccounts) {
+      return {
+        totalBalance: 0,
+        byType: [],
+        recurringCount: 0,
+        nonRecurringCount: 0,
+      }
+    }
 
+    const totals = new Map()
+    let recurringCount = 0
+    let nonRecurringCount = 0
+
+    accounts.forEach((account) => {
+      const type = account.type
+      const current = totals.get(type) ?? { balance: 0, movements: 0 }
+      current.balance += account.balance
+      current.movements += account.movements.length
+      totals.set(type, current)
+
+      account.movements.forEach((movement) => {
+        if (movement.repeats_every === 'none') {
+          nonRecurringCount += 1
+        } else {
+          recurringCount += 1
+        }
+      })
+    })
+
+    const totalBalance = Array.from(totals.values()).reduce(
+      (sum, entry) => sum + entry.balance,
+      0,
+    )
+
+    const byType = Array.from(totals.entries()).map(([type, { balance, movements }]) => ({
+      type,
+      balance,
+      movements,
+      share: totalBalance === 0 ? 0 : (balance / totalBalance) * 100,
+    }))
+
+    byType.sort((a, b) => b.balance - a.balance)
+
+    return {
+      totalBalance,
+      byType,
+      recurringCount,
+      nonRecurringCount,
+    }
+  }, [accounts, hasAccounts])
   const formatCurrency = useMemo(
     () =>
       new Intl.NumberFormat('en-US', {
         style: 'currency',
         currency: 'EUR',
         minimumFractionDigits: 2,
+      }),
+    [],
+  )
+
+  const accountsCaption = hasAccounts
+    ? `${formatCurrency.format(accountTypeSummary.totalBalance)} across ${accountTypeSummary.byType.length} account types.`
+    : 'Create your first euro account to begin tracking capital flows with precision.'
+
+  const dateFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
       }),
     [],
   )
@@ -426,6 +521,125 @@ function Dashboard({
       setShowCreateForm(false)
     }
   }, [hasAccounts, showCreateForm])
+
+  useEffect(() => {
+    if (!hasAccounts) {
+      setSelectedCashflowAccountId('')
+      return
+    }
+    setSelectedCashflowAccountId((prev) => {
+      if (prev && accounts.some((account) => account.id === prev)) {
+        return prev
+      }
+      return accounts[0].id
+    })
+  }, [hasAccounts, accounts])
+
+  const cashflowAccount = useMemo(() => {
+    if (!hasAccounts) return null
+    const match = accounts.find((account) => account.id === selectedCashflowAccountId)
+    return match ?? accounts[0] ?? null
+  }, [accounts, hasAccounts, selectedCashflowAccountId])
+
+  const cashflowSummary = useMemo(() => {
+    if (!cashflowAccount) {
+      return { past: [], upcoming: [], projection: [] }
+    }
+
+    const movements = (cashflowAccount.movements ?? []).map((movement) => ({
+      ...movement,
+      amount: Number(movement.amount ?? 0),
+      date: new Date(movement.created_at),
+    }))
+
+    movements.sort((a, b) => a.date - b.date)
+
+    const now = new Date()
+
+    const past = movements
+      .filter((movement) => movement.date <= now)
+      .sort((a, b) => b.date - a.date)
+      .map((movement) => ({
+        id: movement.id,
+        dateLabel: dateFormatter.format(movement.date),
+        amount: movement.amount,
+        cadence: CADENCE_LABELS[movement.repeats_every] ?? movement.repeats_every,
+      }))
+
+    const upcoming = []
+
+    movements.forEach((movement) => {
+      if (movement.repeats_every === 'none') {
+        if (movement.date > now) {
+          upcoming.push({
+            id: movement.id,
+            nextDate: movement.date,
+            nextDateLabel: dateFormatter.format(movement.date),
+            amount: movement.amount,
+            cadence: CADENCE_LABELS[movement.repeats_every] ?? movement.repeats_every,
+          })
+        }
+        return
+      }
+
+      let nextDate = new Date(movement.date)
+      let guard = 0
+      while (nextDate <= now && guard < 60) {
+        const candidate = addInterval(nextDate, movement.repeats_every)
+        if (!candidate) break
+        nextDate = candidate
+        guard += 1
+      }
+
+      if (nextDate > now) {
+        upcoming.push({
+          id: `${movement.id}-${nextDate.toISOString()}`,
+          nextDate,
+          nextDateLabel: dateFormatter.format(nextDate),
+          amount: movement.amount,
+          cadence: CADENCE_LABELS[movement.repeats_every] ?? movement.repeats_every,
+        })
+      }
+    })
+
+    upcoming.sort((a, b) => a.nextDate - b.nextDate)
+
+    let runningBalance = 0
+    const projection = []
+
+    movements.forEach((movement) => {
+      runningBalance += movement.amount
+      projection.push({
+        date: movement.date,
+        value: runningBalance,
+        isFuture: false,
+      })
+    })
+
+    upcoming
+      .filter((movement) => movement.nextDate > now)
+      .slice(0, 6)
+      .forEach((movement) => {
+        runningBalance += movement.amount
+        projection.push({
+          date: movement.nextDate,
+          value: runningBalance,
+          isFuture: true,
+        })
+      })
+
+    if (projection.length === 0) {
+      projection.push({ date: now, value: 0, isFuture: false })
+    }
+
+    projection.sort((a, b) => a.date - b.date)
+
+    return {
+      past,
+      upcoming,
+      projection,
+    }
+  }, [cashflowAccount, dateFormatter])
 
   const interpretSupabaseError = (error) => {
     if (!error) return 'An unexpected error occurred. Please try again.'
@@ -736,25 +950,45 @@ function Dashboard({
     const isDeleting = deletingAccountId === account.id
 
     return (
-      <article key={account.id} className="account-card">
-        <header>
-          <div>
-            <h3>{account.name}</h3>
-            <span className={`account-chip account-chip--${account.type}`}>
-              {account.type}
-            </span>
+      <div key={account.id} className="account-row-wrapper">
+        <div className="account-row">
+          <div className="account-row__body">
+            <div className="account-row__title">
+              <span className="account-row__name">{account.name}</span>
+              <span className="account-row__meta">
+                ◷ {new Date(account.created_at).toLocaleDateString()}
+              </span>
+            </div>
+            <div className="account-row__stats">
+            <strong>{formatCurrency.format(account.balance)}</strong>
+            <span>🔄 {account.movements.length}</span>
           </div>
-          <strong>{formatCurrency.format(account.balance)}</strong>
-        </header>
-        <div className="account-card__meta">
-          <span>
-            {account.movements.length}{' '}
-            {account.movements.length === 1 ? 'movement' : 'movements'}
-          </span>
-          <span>Created {new Date(account.created_at).toLocaleDateString()}</span>
+        </div>
+          <div className="account-row__actions">
+            <button
+              type="button"
+              className={`icon-button ${movementOpen ? 'icon-button--active' : ''}`}
+              onClick={() =>
+                movementOpen ? cancelMovementForm() : openMovementForm(account.id)
+              }
+              disabled={movementSubmitting || deletingAccountId === account.id}
+              aria-label={movementOpen ? 'Close movement form' : 'Add movement'}
+            >
+              {movementOpen ? '✖️' : '➕'}
+            </button>
+            <button
+              type="button"
+              className="icon-button icon-button--danger"
+              onClick={() => handleDeleteAccount(account)}
+              disabled={isDeleting || movementSubmitting}
+              aria-label="Delete account"
+            >
+              {isDeleting ? '…' : '🗑️'}
+            </button>
+          </div>
         </div>
         {movementOpen ? (
-          <form className="movement-form" onSubmit={handleAddMovement}>
+          <form className="movement-form movement-form--inline" onSubmit={handleAddMovement}>
             <div className="movement-form__row">
               <label className="input-field">
                 <span>Amount</span>
@@ -788,39 +1022,19 @@ function Dashboard({
                 onClick={cancelMovementForm}
                 disabled={movementSubmitting}
               >
-                Cancel
+                ✖️ Cancel
               </button>
               <button
                 type="submit"
                 className="primary-button"
                 disabled={movementSubmitting}
               >
-                {movementSubmitting ? 'Saving…' : 'Add movement'}
+                {movementSubmitting ? '…' : '➕ Commit'}
               </button>
             </div>
           </form>
         ) : null}
-        <div className="account-card__actions">
-          {!movementOpen ? (
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => openMovementForm(account.id)}
-              disabled={movementSubmitting || deletingAccountId === account.id}
-            >
-              Add movement
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="danger-button"
-            onClick={() => handleDeleteAccount(account)}
-            disabled={isDeleting || movementSubmitting}
-          >
-            {isDeleting ? 'Deleting…' : 'Delete account'}
-          </button>
-        </div>
-      </article>
+      </div>
     )
   }
 
@@ -899,20 +1113,122 @@ function Dashboard({
 
       <main className="dashboard__body">
         {activeTab === 'overview' ? (
-          <section className="dashboard__welcome">
-            <div className="welcome-copy">
-              <p className="welcome-kicker">Welcome aboard</p>
-              <h1>Good to see you, {name || 'Fortune operator'}.</h1>
-              <p>
-                Your personalised dashboard surfaces the metrics that matter most.
-                Connect accounts, review capital flows, and deploy strategies with
-                intent.
-              </p>
-              <button className="primary-button primary-button--large">
-                Explore portfolio intelligence
-              </button>
-            </div>
-          </section>
+          <>
+            <section className="dashboard__welcome">
+              <div className="welcome-copy">
+                <p className="welcome-kicker">Capital posture</p>
+                <h1>Good to see you, {name || 'Fortune operator'}.</h1>
+                <p>
+                  Your euro balances are consolidated below. Review distribution, recurring
+                  commitments, and liquidity health at a glance before deploying capital.
+                </p>
+                <button className="primary-button primary-button--large">
+                  ➜ Portfolio intelligence
+                </button>
+              </div>
+            </section>
+
+            <section className="overview">
+              <div className="overview__grid">
+                <div className="overview-card overview-card--primary">
+                  <div className="overview-card__header">
+                    <span className="overview-card__kicker">Total balance</span>
+                    <strong className="overview-card__value">
+                      {formatCurrency.format(accountTypeSummary.totalBalance)}
+                    </strong>
+                  </div>
+                  <p>
+                    Aggregated across every account and movement. Use this baseline when scouting
+                    new allocations or hedging downside.
+                  </p>
+                  <div className="overview-card__metrics">
+                    <div>
+                      <span>Recurring movements</span>
+                      <strong>{accountTypeSummary.recurringCount}</strong>
+                    </div>
+                    <div>
+                      <span>One-off movements</span>
+                      <strong>{accountTypeSummary.nonRecurringCount}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="overview-card overview-card--chart">
+                  <header>
+                    <h3>Capital distribution</h3>
+                    <span>Share by account type</span>
+                  </header>
+                  {hasAccounts ? (
+                    <>
+                      <div className="distribution-bar" aria-hidden="true">
+                        {accountTypeSummary.byType.map((entry) => (
+                          <div
+                            key={entry.type}
+                            className={`distribution-bar__segment distribution-bar__segment--${entry.type}`}
+                            style={{ width: `${entry.share}%` }}
+                            title={`${entry.type}: ${entry.share.toFixed(1)}%`}
+                          />
+                        ))}
+                      </div>
+                      <div className="radial-chart">
+                        {accountTypeSummary.byType.map((entry) => (
+                          <div
+                            key={entry.type}
+                            className={`radial-chart__slice radial-chart__slice--${entry.type}`}
+                          >
+                            <span>{entry.type}</span>
+                            <strong>{formatCurrency.format(entry.balance)}</strong>
+                            <em>{entry.share.toFixed(1)}%</em>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="overview-empty">
+                      Add accounts to reveal live distribution insights.
+                    </div>
+                  )}
+                </div>
+
+                <div className="overview-card overview-card--table">
+                  <header>
+                    <h3>Account breakdown</h3>
+                    <span>Movements &amp; balances</span>
+                  </header>
+                  {hasAccounts ? (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Type</th>
+                          <th className="align-right">Balance</th>
+                          <th className="align-right">Movements</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {accountTypeSummary.byType.map((entry) => (
+                          <tr key={entry.type}>
+                            <td>
+                              <span className={`account-chip account-chip--${entry.type}`}>
+                                {entry.type}
+                              </span>
+                            </td>
+                            <td className="align-right">
+                              {formatCurrency.format(entry.balance)}
+                            </td>
+                            <td className="align-right">{entry.movements}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="overview-empty overview-empty--bordered">
+                      Once accounts are added, you’ll see balances and activity by type here.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          </>
         ) : null}
 
         {activeTab === 'portfolios' ? (
@@ -932,7 +1248,7 @@ function Dashboard({
                     aria-label={showCreateForm ? 'Hide account creation form' : 'Add another account'}
                     disabled={accountsLoading}
                   >
-                    <span aria-hidden="true">+</span>
+                    <span aria-hidden="true">➕</span>
                   </button>
                 ) : null}
               </div>
@@ -963,8 +1279,145 @@ function Dashboard({
                 {accountsLoading ? (
                   <div className="accounts__empty">Refreshing accounts…</div>
                 ) : (
-                  accounts.map(renderAccountCard)
+                  accountTypeSummary.byType.map((summary) => (
+                    <div key={summary.type} className="account-group">
+                      <header className="account-group__header">
+                        <span className={`account-chip account-chip--${summary.type}`}>
+                          {summary.type}
+                        </span>
+                        <div>
+                          <strong>{formatCurrency.format(summary.balance)}</strong>
+                          <em>{summary.share.toFixed(1)}%</em>
+                        </div>
+                      </header>
+                      <div className="account-group__list">
+                        {accounts
+                          .filter((account) => account.type === summary.type)
+                          .map(renderAccountCard)}
+                      </div>
+                    </div>
+                  ))
                 )}
+              </div>
+            )}
+          </section>
+        ) : null}
+
+        {activeTab === 'cashflow' ? (
+          <section className="cashflow">
+            <header className="cashflow__header">
+              <div>
+                <p className="cashflow__eyebrow">Cashflow</p>
+                <h2>Anticipate movements</h2>
+              </div>
+              <label className="cashflow__selector">
+                <span>Select account</span>
+                <select
+                  value={selectedCashflowAccountId}
+                  onChange={(event) => setSelectedCashflowAccountId(event.target.value)}
+                >
+                  {accounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name} · {account.type}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </header>
+
+            {cashflowAccount ? (
+              <div className="cashflow__grid">
+                <div className="cashflow-card">
+                  <header className="cashflow-card__header">
+                    <h3>Past movements</h3>
+                    <span>{cashflowSummary.past.length || '—'}</span>
+                  </header>
+                  {cashflowSummary.past.length ? (
+                    <table className="cashflow-table">
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Description</th>
+                          <th className="align-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cashflowSummary.past.slice(0, 12).map((movement) => (
+                          <tr key={movement.id + movement.dateLabel}>
+                            <td>{movement.dateLabel}</td>
+                            <td>{movement.cadence}</td>
+                            <td
+                              className={`align-right ${
+                                movement.amount >= 0 ? 'amount-positive' : 'amount-negative'
+                              }`}
+                            >
+                              {movement.amount >= 0 ? '+' : ''}
+                              {formatCurrency.format(movement.amount)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="overview-empty overview-empty--bordered">
+                      No historical movements yet for this account.
+                    </div>
+                  )}
+                </div>
+
+                <div className="cashflow-card">
+                  <header className="cashflow-card__header">
+                    <h3>Upcoming</h3>
+                    <span>{cashflowSummary.upcoming.length || '—'}</span>
+                  </header>
+                  {cashflowSummary.upcoming.length ? (
+                    <table className="cashflow-table">
+                      <thead>
+                        <tr>
+                          <th>Next date</th>
+                          <th>Cadence</th>
+                          <th className="align-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cashflowSummary.upcoming.slice(0, 12).map((movement) => (
+                          <tr key={movement.id}>
+                            <td>{movement.nextDateLabel}</td>
+                            <td>{movement.cadence}</td>
+                            <td
+                              className={`align-right ${
+                                movement.amount >= 0 ? 'amount-positive' : 'amount-negative'
+                              }`}
+                            >
+                              {movement.amount >= 0 ? '+' : ''}
+                              {formatCurrency.format(movement.amount)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="overview-empty overview-empty--bordered">
+                      No repeating movements scheduled yet.
+                    </div>
+                  )}
+                </div>
+
+                <div className="cashflow-card cashflow-card--chart">
+                  <header className="cashflow-card__header">
+                    <h3>Balance projection</h3>
+                    <span>Historic + upcoming</span>
+                  </header>
+                  <BalanceChart
+                    points={cashflowSummary.projection}
+                    formatCurrency={formatCurrency}
+                    dateFormatter={dateFormatter}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="overview-empty overview-empty--bordered">
+                Add an account to explore cashflow insights.
               </div>
             )}
           </section>
@@ -1010,6 +1463,70 @@ function InsightCard({ title, value, delta, description }) {
         View details →
       </button>
     </article>
+  )
+}
+
+function BalanceChart({ points, formatCurrency, dateFormatter }) {
+  if (!points.length) {
+    return (
+      <div className="overview-empty overview-empty--bordered">
+        Add movements to visualise projections.
+      </div>
+    )
+  }
+
+  const sorted = [...points].sort((a, b) => a.date - b.date)
+  const minValue = Math.min(...sorted.map((point) => point.value))
+  const maxValue = Math.max(...sorted.map((point) => point.value))
+  const range = maxValue - minValue || 1
+
+  const width = 420
+  const height = 200
+
+  const coordinates = sorted.map((point, index) => {
+    const x =
+      sorted.length === 1 ? width / 2 : (index / (sorted.length - 1 || 1)) * width
+    const y = height - ((point.value - minValue) / range) * height
+    return { ...point, x, y }
+  })
+
+  const pathData = coordinates
+    .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x},${point.y}`)
+    .join(' ')
+
+  const firstPoint = coordinates[0]
+  const lastPoint = coordinates[coordinates.length - 1]
+  const areaPath = `${pathData} L${lastPoint.x},${height} L${firstPoint.x},${height} Z`
+
+  const tickCount = Math.min(4, coordinates.length)
+  const ticks = []
+  if (tickCount === coordinates.length) {
+    ticks.push(...coordinates)
+  } else {
+    const interval = (coordinates.length - 1) / (tickCount - 1)
+    for (let i = 0; i < tickCount; i += 1) {
+      const index = Math.round(i * interval)
+      ticks.push(coordinates[Math.min(index, coordinates.length - 1)])
+    }
+  }
+
+  return (
+    <div className="balance-chart">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+        <path className="balance-chart__area" d={areaPath} />
+        <polyline className="balance-chart__line" fill="none" points={coordinates.map((point) => `${point.x},${point.y}`).join(' ')} />
+        <line className="balance-chart__axis" x1="0" x2={width} y1={height} y2={height} />
+      </svg>
+      <div className="balance-chart__ticks">
+        {ticks.map((point, index) => (
+          <span key={`${point.date.toISOString()}-${index}`}>
+            {dateFormatter.format(point.date)}
+            <br />
+            {formatCurrency.format(point.value)}
+          </span>
+        ))}
+      </div>
+    </div>
   )
 }
 

@@ -95,9 +95,11 @@ alter table public.financial_account_movements
   add constraint financial_account_movements_repeats_every_check
     check (repeats_every in ('none', 'daily', 'weekly', 'fortnite', 'montly', 'yearly'));
 
-create policy if not exists "accounts deletable by owners" on public.financial_accounts
+drop policy if exists "accounts deletable by owners" on public.financial_accounts;
+create policy "accounts deletable by owners" on public.financial_accounts
   for delete using (auth.uid() = user_id);
 
-create policy if not exists "movements deletable by owners" on public.financial_account_movements
+drop policy if exists "movements deletable by owners" on public.financial_account_movements;
+create policy "movements deletable by owners" on public.financial_account_movements
   for delete using (auth.uid() = user_id);
 ```
